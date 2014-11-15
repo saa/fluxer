@@ -2,9 +2,28 @@
 
 -export([init/0]).
 -export([init/1]).
--export([get_databases/1]).
+-export([set_db/2]).
+
 -export([write_series/2]).
 -export([query/2]).
+
+-export([get_databases/1]).
+-export([create_database/2]).
+-export([delete_database/2]).
+
+-export([get_cluster_admins/1]).
+-export([add_cluster_admin/2]).
+-export([update_cluster_admin_password/2]).
+-export([delete_cluster_admin/2]).
+-export([remove_server_from_cluster/2]).
+
+-export([add_database_user/2]).
+-export([delete_database_user/2]).
+-export([update_user_password/2]).
+-export([get_database_users/1]).
+-export([add_database_admin_priv/2]).
+-export([delete_database_admin_priv/2]).
+-export([update_database_user/2]).
 
 -record(flux, {db       :: binary(),
                host     :: binary(),
@@ -15,7 +34,10 @@
               }).
 
 -type ok_result() :: {ok, map()}.
--type error_result() :: {error, integer(), binary()} | {error, db_not_set}.
+-type error_result() :: {error, integer(), binary()} |
+                        {error, db_not_set} |
+                        {error, database_already_exists} |
+                        {error, influxdb_unavailable}.
 
 %%%===================================================================
 %%% API
@@ -36,16 +58,8 @@ init(Config) ->
          ssl = maps:get(ssl, Config, false)
         }.
 
--spec get_databases(#flux{}) -> ok_result() | error_result().
-get_databases(Flux) ->
-    case hackney:get(make_url(<<"/db">>, Flux)) of
-        {ok, 200, _Headers, ClientRef} ->
-            {ok, RespBody} = hackney:body(ClientRef),
-            {ok, json:from_binary(RespBody)};
-        {ok, StatusCode, _Headers, ClientRef} ->
-            {ok, RespBody} = hackney:body(ClientRef),
-            {error, StatusCode, RespBody}
-    end.
+set_db(Name, Flux) ->
+    Flux#flux{ db = Name }.
 
 -spec write_series(#flux{}, map()) -> ok | error_result().
 write_series(Flux, _Data) when Flux#flux.db == undefined ->
@@ -57,7 +71,9 @@ write_series(Flux, Data) ->
             ok;
         {ok, StatusCode, _Headers, ClientRef} ->
             {ok, RespBody} = hackney:body(ClientRef),
-            {error, StatusCode, RespBody}
+            {error, StatusCode, RespBody};
+        {error, econnrefused} ->
+            {error, influxdb_unavailable}
     end.
 
 -spec query(#flux{}, binary()) -> ok_result() | error_result().
@@ -70,7 +86,219 @@ query(Flux, Query) when is_binary(Query) ->
             {ok, json:from_binary(RespBody)};
         {ok, StatusCode, _Headers, ClientRef} ->
             {ok, RespBody} = hackney:body(ClientRef),
-            {error, StatusCode, RespBody}
+            {error, StatusCode, RespBody};
+        {error, econnrefused} ->
+            {error, influxdb_unavailable}
+    end.
+
+-spec get_databases(#flux{}) -> ok_result() | error_result().
+get_databases(Flux) ->
+    case hackney:get(make_url(<<"/db">>, Flux)) of
+        {ok, 200, _Headers, ClientRef} ->
+            {ok, RespBody} = hackney:body(ClientRef),
+            {ok, json:from_binary(RespBody)};
+        {ok, StatusCode, _Headers, ClientRef} ->
+            {ok, RespBody} = hackney:body(ClientRef),
+            {error, StatusCode, RespBody};
+        {error, econnrefused} ->
+            {error, influxdb_unavailable}
+    end.
+
+-spec create_database(binary(), #flux{}) -> ok | error_result().
+create_database(Name, Flux) when is_binary(Name) ->
+    Data = json:to_binary(#{ name => Name }),
+    case hackney:post(make_url(<<"/db">>, Flux), [], Data) of
+        {ok, 201, _Headers, _ClientRef} ->
+            ok;
+        {ok, 409, _Headers, _ClientRef} ->
+            {error, database_already_exists};
+        {ok, StatusCode, _Headers, ClientRef} ->
+            {ok, RespBody} = hackney:body(ClientRef),
+            {error, StatusCode, RespBody};
+        {error, econnrefused} ->
+            {error, influxdb_unavailable}
+    end.
+
+-spec delete_database(binary(), #flux{}) -> ok | error_result().
+delete_database(Name, Flux) ->
+    case hackney:delete(make_url(<<"/db/", Name/binary>>, Flux)) of
+        {ok, 200, _Headers, _ClientRef} ->
+            ok;
+        {ok, StatusCode, _Headers, ClientRef} ->
+            {ok, RespBody} = hackney:body(ClientRef),
+            {error, StatusCode, RespBody};
+        {error, econnrefused} ->
+            {error, influxdb_unavailable}
+    end.
+
+-spec get_cluster_admins(#flux{}) -> ok_result() | error_result().
+get_cluster_admins(Flux) ->
+    case hackney:get(make_url(<<"/cluster_admins">>, Flux)) of
+        {ok, 200, _Headers, ClientRef} ->
+            {ok, RespBody} = hackney:body(ClientRef),
+            {ok, json:from_binary(RespBody)};
+        {ok, StatusCode, _Headers, ClientRef} ->
+            {ok, RespBody} = hackney:body(ClientRef),
+            {error, StatusCode, RespBody};
+        {error, econnrefused} ->
+            {error, influxdb_unavailable}
+    end.
+
+-spec add_cluster_admin(map(), #flux{}) -> ok | error_result().
+add_cluster_admin(Admin, Flux) when is_map(Admin) ->
+    case hackney:post(make_url(<<"cluster_admins">>, Flux), [], json:to_binary(Admin)) of
+        {ok, 200, _Headers, _ClientRef} ->
+            ok;
+        {ok, StatusCode, _Headers, ClientRef} ->
+            {ok, RespBody} = hackney:body(ClientRef),
+            {error, StatusCode, RespBody};
+        {error, econnrefused} ->
+            {error, influxdb_unavailable}
+    end.
+
+-spec update_cluster_admin_password(map(), #flux{}) -> ok | error_result().
+update_cluster_admin_password(#{ name := Name, password := Password }, Flux) ->
+    URL = [<<"/cluster_admins/", Name/binary>>],
+    case hackney:post(make_url(URL, Flux), [], json:to_binary(#{ password => Password })) of
+        {ok, 200, _Headers, _ClientRef} ->
+            ok;
+        {ok, StatusCode, _Headers, ClientRef} ->
+            {ok, RespBody} = hackney:body(ClientRef),
+            {error, StatusCode, RespBody};
+        {error, econnrefused} ->
+            {error, influxdb_unavailable}
+    end.
+
+-spec delete_cluster_admin(binary(), #flux{}) -> ok | error_result().
+delete_cluster_admin(Name, Flux) when is_binary(Name) ->
+    URL = [<<"/cluster_admins/", Name/binary>>],
+    case hackney:delete(make_url(URL, Flux)) of
+        {ok, 200, _Headers, _ClientRef} ->
+            ok;
+        {ok, StatusCode, _Headers, ClientRef} ->
+            {ok, RespBody} = hackney:body(ClientRef),
+            {error, StatusCode, RespBody};
+        {error, econnrefused} ->
+            {error, influxdb_unavailable}
+    end.
+
+-spec add_database_user(map(), #flux{}) -> ok | error_result().
+add_database_user(_User, Flux) when Flux#flux.db == undefined ->
+    {error, db_not_set};
+add_database_user(User, Flux) when is_map(User) ->
+    URL = <<"/db/", (Flux#flux.db)/binary, "/users">>,
+    case hackney:post(make_url(URL, Flux), [], json:to_binary(User)) of
+        {ok, 200, _Headers, _ClientRef} ->
+            ok;
+        {ok, StatusCode, _Headers, ClientRef} ->
+            {ok, RespBody} = hackney:body(ClientRef),
+            {error, StatusCode, RespBody};
+        {error, econnrefused} ->
+            {error, influxdb_unavailable}
+    end.
+
+-spec delete_database_user(binary(), #flux{}) -> ok | error_result().
+delete_database_user(_Name, Flux) when Flux#flux.db == undefined ->
+    {error, db_not_set};
+delete_database_user(Name, Flux) when is_binary(Name) ->
+    URL = <<"/db/", (Flux#flux.db)/binary, "/users/", Name/binary>>,
+    case hackney:delete(make_url(URL, Flux)) of
+        {ok, 200, _Headers, _ClientRef} ->
+            ok;
+        {ok, StatusCode, _Headers, ClientRef} ->
+            {ok, RespBody} = hackney:body(ClientRef),
+            {error, StatusCode, RespBody};
+        {error, econnrefused} ->
+            {error, influxdb_unavailable}
+    end.
+
+-spec update_user_password(binary(), #flux{}) -> ok | error_result().
+update_user_password(_Name, Flux) when Flux#flux.db == undefined ->
+    {error, db_not_set};
+update_user_password(#{ name := Name, password := Password }, Flux) ->
+    URL = <<"/db/", (Flux#flux.db)/binary, "/users/", Name/binary>>,
+    case hackney:post(make_url(URL, Flux), [], json:to_binary(#{ password => Password })) of
+        {ok, 200, _Headers, _ClientRef} ->
+            ok;
+        {ok, StatusCode, _Headers, ClientRef} ->
+            {ok, RespBody} = hackney:body(ClientRef),
+            {error, StatusCode, RespBody};
+        {error, econnrefused} ->
+            {error, influxdb_unavailable}
+    end.
+
+-spec get_database_users(#flux{}) -> ok_result() | error_result().
+get_database_users(Flux) when Flux#flux.db == undefined ->
+    {error, db_not_set};
+get_database_users(Flux) ->
+    URL = <<"/db/", (Flux#flux.db)/binary, "/users">>,
+    case hackney:get(make_url(URL, Flux)) of
+        {ok, 200, _Headers, ClientRef} ->
+            {ok, RespBody} = hackney:body(ClientRef),
+            {ok, json:from_binary(RespBody)};
+        {ok, StatusCode, _Headers, ClientRef} ->
+            {ok, RespBody} = hackney:body(ClientRef),
+            {error, StatusCode, RespBody};
+        {error, econnrefused} ->
+            {error, influxdb_unavailable}
+    end.
+
+-spec add_database_admin_priv(binary(), #flux{}) -> ok | error_result().
+add_database_admin_priv(_Name, Flux) when Flux#flux.db == undefined ->
+    {error, db_not_set};
+add_database_admin_priv(Name, Flux) ->
+    URL = <<"/db/", (Flux#flux.db)/binary, "/users/", Name/binary>>,
+    case hackney:post(make_url(URL, Flux), [], json:to_binary(#{ admin => true })) of
+        {ok, 200, _Headers, _ClientRef} ->
+            ok;
+        {ok, StatusCode, _Headers, ClientRef} ->
+            {ok, RespBody} = hackney:body(ClientRef),
+            {error, StatusCode, RespBody};
+        {error, econnrefused} ->
+            {error, influxdb_unavailable}
+    end.
+
+-spec delete_database_admin_priv(binary(), #flux{}) -> ok | error_result().
+delete_database_admin_priv(_Name, Flux) when Flux#flux.db == undefined ->
+    {error, db_not_set};
+delete_database_admin_priv(Name, Flux) ->
+    URL = <<"/db/", (Flux#flux.db)/binary, "/users/", Name/binary>>,
+    case hackney:post(make_url(URL, Flux), [], json:to_binary(#{ admin => false })) of
+        {ok, 200, _Headers, _ClientRef} ->
+            ok;
+        {ok, StatusCode, _Headers, ClientRef} ->
+            {ok, RespBody} = hackney:body(ClientRef),
+            {error, StatusCode, RespBody};
+        {error, econnrefused} ->
+            {error, influxdb_unavailable}
+    end.
+
+-spec update_database_user(map(), #flux{}) -> ok | error_result().
+update_database_user(_User, Flux) when Flux#flux.db == undefined ->
+    {error, db_not_set};
+update_database_user(#{ name := Name } = User, Flux) ->
+    URL = <<"/db/", (Flux#flux.db)/binary, "/users/", Name/binary>>,
+    case hackney:post(make_url(URL, Flux), [], json:to_binary(maps:without([name], User))) of
+        {ok, 200, _Headers, _ClientRef} ->
+            ok;
+        {ok, StatusCode, _Headers, ClientRef} ->
+            {ok, RespBody} = hackney:body(ClientRef),
+            {error, StatusCode, RespBody};
+        {error, econnrefused} ->
+            {error, influxdb_unavailable}
+    end.
+
+-spec remove_server_from_cluster(binary(), #flux{}) -> ok | error_result().
+remove_server_from_cluster(Server, Flux) ->
+    URL = <<"/cluster/servers/", Server/binary>>,
+    case hackney:delete(make_url(URL, Flux)) of
+        {ok, 200, _Headers, _ClientRef} ->
+            ok;
+        {ok, StatusCode, _Headers, ClientRef} ->
+            {ok, RespBody} = hackney:body(ClientRef),
+            {error, StatusCode, RespBody};
+        {error, econnrefused} ->
+            {error, influxdb_unavailable}
     end.
 
 %%%===================================================================
