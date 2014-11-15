@@ -7,7 +7,7 @@
                   kernel,
                   stdlib,
                   hackney,
-                  jxs
+                  jsx
                  ]},
   {mod, { fluxer_app, []}},
   {env, []}

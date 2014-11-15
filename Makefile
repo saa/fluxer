@@ -17,7 +17,7 @@ update-deps:
 	$(REBAR) update-deps
 
 run:
-	erl -pa deps/*/ebin -pa deps/*/include -pa ebin -s fluxer_app
+	erl -pa deps/*/ebin -pa deps/*/include -pa ebin -config test.config -s fluxer_app
 
 console:
 	erl -pa deps/*/ebin -pa deps/*/include -pa ebin
