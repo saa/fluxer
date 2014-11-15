@@ -202,7 +202,7 @@ ok
        <<"writeTo">> => <<".*">>}]}
 ```
 
-**Add databse user admin privileges**
+**Add database user admin privileges**
 
 ```erlang
 
@@ -211,7 +211,7 @@ ok
 ok
 ```
 
-**Delete databse user admin privileges**
+**Delete database user admin privileges**
 
 ```erlang
 
