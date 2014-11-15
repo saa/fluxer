@@ -228,8 +228,3 @@ ok
 2> fluxer:update_database_user(#{ name => <<"user1">>, readFrom => <<"^$">>, writeTo => <<".*">> }, Flux).
 ok
 ```
-
-## TODO
-
-- implement more API
-- add tests
