@@ -1,14 +1,11 @@
 {application, fluxer,
  [
   {description, "Erlang clinet for InfluxDB"},
-  {vsn, git},
-  {registered, []},
+  {vsn, "0.1.0"},
   {applications, [
                   kernel,
                   stdlib,
                   hackney,
-                  jsx
-                 ]},
-  {mod, { fluxer_app, []}},
-  {env, []}
+                  json
+                 ]}
  ]}.

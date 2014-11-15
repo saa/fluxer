@@ -2,27 +2,20 @@
 
 -export([init/0]).
 -export([init/1]).
--export([init/2]).
--export([init/3]).
--export([init/5]).
-
 -export([get_databases/1]).
 -export([write_series/2]).
 -export([query/2]).
 
--record(flux, {db       = undefined       :: undefined | atom(),
-               host     = <<"localhost">> :: binary(),
-               port     = 8086            :: non_neg_integer(),
-               user     = <<"root">>      :: binary(),
-               password = <<"root">>      :: binary(),
-               ssl      = false           :: boolean()
+-record(flux, {db       :: binary(),
+               host     :: binary(),
+               port     :: non_neg_integer(),
+               user     :: binary(),
+               password :: binary(),
+               ssl      :: boolean()
               }).
 
--type ok_result() :: {ok, list()}.
--type error_result() :: {error, integer(), binary()}.
--type db() :: atom().
--type host() :: binary().
--type inf_port() :: non_neg_integer().
+-type ok_result() :: {ok, map()}.
+-type error_result() :: {error, integer(), binary()} | {error, db_not_set}.
 
 %%%===================================================================
 %%% API
@@ -30,42 +23,36 @@
 
 -spec init() -> #flux{}.
 init() ->
-    #flux{}.
+    init(#{}).
 
--spec init(db() | host()) -> #flux{}.
-init(Db) when is_atom(Db) ->
-    #flux{db = atom_to_binary(Db, utf8)};
-init(Host) when is_binary(Host) ->
-    #flux{host = Host}.
-
--spec init(db() | host(), host() | inf_port()) -> #flux{}.
-init(Db, Host) when is_atom(Db) ->
-    #flux{db = Db, host = Host};
-init(Host, Port) when is_binary(Host) ->
-    #flux{host = Host, port = Port}.
-
--spec init(atom(), host(), inf_port()) -> #flux{}.
-init(Db, Host, Port) ->
-    #flux{db = Db, host = Host, port = Port}.
-
--spec init(atom(), host(), inf_port(), binary(), binary()) -> #flux{}.
-init(Db, Host, Port, User, Password) ->
-    #flux{db = Db, host = Host, port = Port, user = User, password = Password}.
+-spec init(map()) -> #flux{}.
+init(Config) ->
+    #flux{
+         db = maps:get(db, Config, undefined),
+         host = maps:get(host, Config, <<"127.0.0.1">>),
+         port = maps:get(port, Config, 8086),
+         user = maps:get(user, Config, <<"root">>),
+         password = maps:get(password, Config, <<"root">>),
+         ssl = maps:get(ssl, Config, false)
+        }.
 
 -spec get_databases(#flux{}) -> ok_result() | error_result().
 get_databases(Flux) ->
     case hackney:get(make_url(<<"/db">>, Flux)) of
         {ok, 200, _Headers, ClientRef} ->
             {ok, RespBody} = hackney:body(ClientRef),
-            {ok, jsxn:decode(RespBody)};
+            {ok, json:from_binary(RespBody)};
         {ok, StatusCode, _Headers, ClientRef} ->
             {ok, RespBody} = hackney:body(ClientRef),
             {error, StatusCode, RespBody}
     end.
 
 -spec write_series(#flux{}, map()) -> ok | error_result().
+write_series(Flux, _Data) when Flux#flux.db == undefined ->
+    {error, db_not_set};
 write_series(Flux, Data) ->
-    case hackney:post(make_series_url(Flux), [], jsx:encode([Data])) of
+    Data2 = lists:flatten([Data]),
+    case hackney:post(make_series_url(Flux), [], json:to_binary(Data2)) of
         {ok, 200, _Headers, _ClientRef} ->
             ok;
         {ok, StatusCode, _Headers, ClientRef} ->
@@ -74,11 +61,13 @@ write_series(Flux, Data) ->
     end.
 
 -spec query(#flux{}, binary()) -> ok_result() | error_result().
+query(Flux, _Query) when Flux#flux.db == undefined ->
+    {error, db_not_set};
 query(Flux, Query) when is_binary(Query) ->
     case hackney:get(make_series_url(Flux, [{<<"q">>, Query}])) of
         {ok, 200, _Header, ClientRef} ->
             {ok, RespBody} = hackney:body(ClientRef),
-            {ok, jsx:decode(RespBody)};
+            {ok, json:from_binary(RespBody)};
         {ok, StatusCode, _Headers, ClientRef} ->
             {ok, RespBody} = hackney:body(ClientRef),
             {error, StatusCode, RespBody}

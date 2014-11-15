@@ -16,11 +16,10 @@ get-deps:
 update-deps:
 	$(REBAR) update-deps
 
-run:
-	erl -pa deps/*/ebin -pa deps/*/include -pa ebin -config test.config -s fluxer_app
-
 console:
 	erl -pa deps/*/ebin -pa deps/*/include -pa ebin
+
+test: eunit ct
 
 eunit:
 	$(REBAR) eunit skip_deps=true
