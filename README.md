@@ -4,7 +4,7 @@ Copyright (c) 2014 Sergey Abramyan
 
 __Version:__ 0.2.0
 
-[![Build Status](https://travis-ci.org/PibbleTeam/fluxer.svg?branch=master)](http://travis-ci.org/PibbleTeam/fluxer)
+[![Build Status](https://travis-ci.org/saa/fluxer.svg?branch=master)](http://travis-ci.org/saa/fluxer)
 
 ## API
 
