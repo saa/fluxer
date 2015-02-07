@@ -218,7 +218,7 @@ ok
 1> Flux = fluxer:init(#{ db => <<"test">> }).
 2> fluxer:delete_database_admin_priv(<<"user1">>, Flux).
 ok
-``
+```
 
 **Limiting user access**
 
