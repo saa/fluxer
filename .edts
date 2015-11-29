@@ -1,0 +1,5 @@
+:name "fluxer_emacs"
+:node-sname "fluxer-emacs"
+:lib-dirs '("deps" "_build/default/lib")
+:app-include-dirs '("include")
+:xref-error-whitelist '("lager:*")
