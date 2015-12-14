@@ -9,10 +9,10 @@
 
 -export([write/2, write/3, write/4]).
 
--export([select/2]).
+-export([select/2, select/3]).
 
 -define(POOL_NAME, fluxer_pool).
--define(CT, {"Content-Type", "text/plain"}).
+-define(CT, {<<"Content-Type">>, <<"text/plain">>}).
 
 %%====================================================================
 %% API
@@ -29,11 +29,15 @@ pool_name() ->
 create_database(Name) ->
     create_database(Name, false).
 
--spec create_database(string(), boolean()) -> term().
-create_database(Name, IfNotExists) ->
+-spec create_database(string() | boolean() | atom(), boolean()) -> term().
+create_database(Name, IfNotExists) when is_list(Name) ->
+    create_database(to_binary(Name), IfNotExists);
+create_database(Name, IfNotExists) when is_atom(Name) ->
+    create_database(to_binary(Name), IfNotExists);
+create_database(Name, IfNotExists) when is_binary(Name), is_boolean(IfNotExists) ->
     Query = case IfNotExists of
-                true -> ["CREATE DATABASE IF NOT EXISTS ", Name];
-                false -> ["CREATE DATABASE ", Name]
+                true -> [<<"CREATE DATABASE IF NOT EXISTS ">>, Name];
+                false -> [<<"CREATE DATABASE ">>, Name]
             end,
     case query(Query) of
         {ok, _Resp} -> ok;
@@ -42,29 +46,34 @@ create_database(Name, IfNotExists) ->
 
 -spec show_databases() -> term().
 show_databases() ->
-    query("SHOW DATABASES").
+    query(<<"SHOW DATABASES">>).
 
--spec select(string(), string()) -> term().
-select(DB, Query) ->
-    query(DB, Query).
+select(DB, Measurement) ->
+    Query = <<"SELECT * FROM ", (to_binary(Measurement))/binary>>,
+    select_2(DB, Query).
+
+select(DB, Measurement, Cols) ->
+    ComposedCols = compose_cols(Cols, <<>>),
+    Query = <<"SELECT ", ComposedCols/binary, " FROM ", (to_binary(Measurement))/binary>>,
+    select_2(DB, Query).
 
 write(DB, Measurement, Value) ->
     write(DB, Measurement, [], Value).
 
 write(DB, Measurement, [], Value) ->
-    Line = iolist_to_binary([Measurement, " value=", to_binary(Value)]),
+    Line = iolist_to_binary([to_binary(Measurement), <<" value=">>, maybe_integer(Value)]),
     write(DB, Line);
 write(DB, Measurement, Tags, Value) ->
     ComposedTags = compose_tags(Tags),
-    Line = iolist_to_binary([Measurement, ",", ComposedTags, " value=", to_binary(Value)]),
+    Line = iolist_to_binary([to_binary(Measurement), <<",">>, ComposedTags, <<" value=">>, maybe_integer(Value)]),
     write(DB, Line).
 
 write(DB, Data) when is_list(Data) ->
     write(DB, list_to_binary(Data));
-write(DB, Data) ->
-    Path = iolist_to_binary(["/write?db=", DB]),
+write(DB, Data) when is_binary(Data) ->
+    Path = iolist_to_binary([<<"/write?db=">>, to_binary(DB)]),
     Fun = fun(W) ->
-                  fusco:request(W, Path, "POST", [?CT], Data, 5000)
+                  fusco:request(W, Path, <<"POST">>, [?CT], Data, 5000)
           end,
     case poolboy:transaction(?POOL_NAME, Fun) of
         {ok, {{<<"204">>, _}, _Hdrs, _Resp, _, _}} -> ok;
@@ -75,19 +84,23 @@ write(DB, Data) ->
 %% Internal functions
 %%====================================================================
 
+-spec select_2(string() | binary() | atom(), string() | binary()) -> term().
+select_2(DB, Query) ->
+    query(to_binary(DB), to_binary(Query)).
+
 -spec query(iodata() | binary()) -> term().
 query(Query) when is_list(Query) ->
     query(iolist_to_binary(Query));
 query(Query) when is_binary(Query) ->
-    query_2(iolist_to_binary(["/query?q=", Query])).
+    query_2(iolist_to_binary([<<"/query?q=">>, Query])).
 
-query(DB, Query) ->
-    query_2(iolist_to_binary(["/query?db=", DB, "&q=", Query])).
+query(DB, Query) when is_binary(Query), is_binary(DB) ->
+    query_2(iolist_to_binary([<<"/query?db=">>, to_binary(DB), <<"&q=">>, Query])).
 
-query_2(Query) ->
+query_2(Query) when is_binary(Query) ->
     Query2 = binary:replace(Query, <<" ">>, <<"%20">>, [global]),
     Fun = fun(W) ->
-                  fusco:request(W, Query2, "GET", [], [], 5000)
+                  fusco:request(W, Query2, <<"GET">>, [], [], 5000)
           end,
     case poolboy:transaction(?POOL_NAME, Fun) of
         {ok, {{<<"200">>, _}, _Hdrs, Resp, _, _}} ->
@@ -108,11 +121,25 @@ compose_tags([{Key, Value} | Rest], Acc) ->
     NewAcc = <<(to_binary(Key))/binary, "=", (to_binary(Value))/binary, ",", Acc/binary>>,
     compose_tags(Rest, NewAcc).
 
-to_binary(Val) when is_integer(Val) ->
-    integer_to_binary(Val);
-to_binary(Val) when is_list(Val) ->
-    list_to_binary(Val);
-to_binary(Val) when is_atom(Val) ->
-    atom_to_binary(Val, utf8);
-to_binary(Val) when is_float(Val) ->
-    list_to_binary(float_to_list(Val)).
+compose_cols([], Acc) ->
+    Acc;
+compose_cols([Col | Cols], <<>>) ->
+    compose_cols(Cols, <<(to_binary(Col))/binary>>);
+compose_cols([Col | Cols], Acc) ->
+    compose_cols(Cols, <<(to_binary(Col))/binary, ",", Acc/binary>>).
+
+maybe_integer(Value) when is_integer(Value) ->
+    <<(to_binary(Value))/binary, "i">>;
+maybe_integer(Value) ->
+    to_binary(Value).
+
+to_binary(Value) when is_integer(Value) ->
+    integer_to_binary(Value);
+to_binary(Value) when is_list(Value) ->
+    list_to_binary(Value);
+to_binary(Value) when is_atom(Value) ->
+    atom_to_binary(Value, utf8);
+to_binary(Value) when is_float(Value) ->
+    list_to_binary(float_to_list(Value));
+to_binary(Value) when is_binary(Value) ->
+    Value.
