@@ -1,333 +1,117 @@
 -module(fluxer).
 
--export([init/0]).
--export([init/1]).
--export([set_db/2]).
+-export([start_link/1]).
+-export([pool_name/0]).
 
--export([write_series/2]).
--export([query/2]).
-
--export([get_databases/1]).
+-export([create_database/1]).
 -export([create_database/2]).
--export([delete_database/2]).
+-export([show_databases/0]).
 
--export([get_cluster_admins/1]).
--export([add_cluster_admin/2]).
--export([update_cluster_admin_password/2]).
--export([delete_cluster_admin/2]).
--export([remove_server_from_cluster/2]).
+-export([write/2, write/3, write/4]).
 
--export([add_database_user/2]).
--export([delete_database_user/2]).
--export([update_user_password/2]).
--export([get_database_users/1]).
--export([add_database_admin_priv/2]).
--export([delete_database_admin_priv/2]).
--export([update_database_user/2]).
+-export([select/2]).
 
--record(flux, {db       :: binary(),
-               host     :: binary(),
-               port     :: non_neg_integer(),
-               user     :: binary(),
-               password :: binary(),
-               ssl      :: boolean()
-              }).
+-define(POOL_NAME, fluxer_pool).
 
--type ok_result() :: {ok, map()}.
--type error_result() :: {error, integer(), binary()} |
-                        {error, db_not_set} |
-                        {error, database_already_exists} |
-                        {error, influxdb_unavailable}.
+%%====================================================================
+%% API
+%%====================================================================
 
-%%%===================================================================
-%%% API
-%%%===================================================================
+start_link([Host, Port, IsSSL, Options]) ->
+    fusco:start_link({Host, Port, IsSSL}, Options).
 
--spec init() -> #flux{}.
-init() ->
-    init(#{}).
+-spec pool_name() -> atom().
+pool_name() ->
+    ?POOL_NAME.
 
--spec init(map()) -> #flux{}.
-init(Config) ->
-    #flux{
-         db = maps:get(db, Config, undefined),
-         host = maps:get(host, Config, <<"127.0.0.1">>),
-         port = maps:get(port, Config, 8086),
-         user = maps:get(user, Config, <<"root">>),
-         password = maps:get(password, Config, <<"root">>),
-         ssl = maps:get(ssl, Config, false)
-        }.
+-spec create_database(string()) -> term().
+create_database(Name) ->
+    create_database(Name, false).
 
-set_db(Name, Flux) ->
-    Flux#flux{ db = Name }.
-
--spec write_series(#flux{}, map()) -> ok | error_result().
-write_series(Flux, _Data) when Flux#flux.db == undefined ->
-    {error, db_not_set};
-write_series(Flux, Data) ->
-    Data2 = lists:flatten([Data]),
-    case hackney:post(make_series_url(Flux), [], json:to_binary(Data2)) of
-        {ok, 200, _Headers, _ClientRef} ->
-            ok;
-        {ok, StatusCode, _Headers, ClientRef} ->
-            {ok, RespBody} = hackney:body(ClientRef),
-            {error, StatusCode, RespBody};
-        {error, econnrefused} ->
-            {error, influxdb_unavailable}
+-spec create_database(string(), boolean()) -> term().
+create_database(Name, IfNotExists) ->
+    Query = case IfNotExists of
+                true -> ["CREATE DATABASE IF NOT EXISTS ", Name];
+                false -> ["CREATE DATABASE ", Name]
+            end,
+    case query(Query) of
+        {ok, _Resp} -> ok;
+        Error -> Error
     end.
 
--spec query(#flux{}, binary()) -> ok_result() | error_result().
-query(Flux, _Query) when Flux#flux.db == undefined ->
-    {error, db_not_set};
-query(Flux, Query) when is_binary(Query) ->
-    case hackney:get(make_series_url(Flux, [{<<"q">>, Query}])) of
-        {ok, 200, _Header, ClientRef} ->
-            {ok, RespBody} = hackney:body(ClientRef),
-            {ok, json:from_binary(RespBody)};
-        {ok, StatusCode, _Headers, ClientRef} ->
-            {ok, RespBody} = hackney:body(ClientRef),
-            {error, StatusCode, RespBody};
-        {error, econnrefused} ->
-            {error, influxdb_unavailable}
+-spec show_databases() -> term().
+show_databases() ->
+    query("SHOW DATABASES").
+
+-spec select(string(), string()) -> term().
+select(DB, Query) ->
+    query(DB, Query).
+
+write(DB, Measurement, Value) ->
+    write(DB, Measurement, [], Value).
+
+write(DB, Measurement, [], Value) ->
+    Line = iolist_to_binary([Measurement, " value=", to_binary(Value)]),
+    write(DB, Line);
+write(DB, Measurement, Tags, Value) ->
+    ComposedTags = compose_tags(Tags),
+    Line = iolist_to_binary([Measurement, ",", ComposedTags, " value=", to_binary(Value)]),
+    write(DB, Line).
+
+write(DB, Data) when is_list(Data) ->
+    write(DB, list_to_binary(Data));
+write(DB, Data) ->
+    Path = iolist_to_binary(["/write?db=", DB]),
+    Fun = fun(W) ->
+                  fusco:request(W, Path, "POST", [], Data, 5000)
+          end,
+    case poolboy:transaction(?POOL_NAME, Fun) of
+        {ok, {{<<"204">>, _}, _Hdrs, _Resp, _, _}} -> ok;
+        Error -> Error
     end.
 
--spec get_databases(#flux{}) -> ok_result() | error_result().
-get_databases(Flux) ->
-    case hackney:get(make_url(<<"/db">>, Flux)) of
-        {ok, 200, _Headers, ClientRef} ->
-            {ok, RespBody} = hackney:body(ClientRef),
-            {ok, json:from_binary(RespBody)};
-        {ok, StatusCode, _Headers, ClientRef} ->
-            {ok, RespBody} = hackney:body(ClientRef),
-            {error, StatusCode, RespBody};
-        {error, econnrefused} ->
-            {error, influxdb_unavailable}
+%%====================================================================
+%% Internal functions
+%%====================================================================
+
+-spec query(iodata() | binary()) -> term().
+query(Query) when is_list(Query) ->
+    query(iolist_to_binary(Query));
+query(Query) when is_binary(Query) ->
+    query_2(iolist_to_binary(["/query?q=", Query])).
+
+query(DB, Query) ->
+    query_2(iolist_to_binary(["/query?db=", DB, "&q=", Query])).
+
+query_2(Query) ->
+    Query2 = binary:replace(Query, <<" ">>, <<"%20">>, [global]),
+    Fun = fun(W) ->
+                  fusco:request(W, Query2, "GET", [], [], 5000)
+          end,
+    case poolboy:transaction(?POOL_NAME, Fun) of
+        {ok, {{<<"200">>, _}, _Hdrs, Resp, _, _}} ->
+            {ok, jsx:decode(Resp)};
+        Error ->
+            Error
     end.
 
--spec create_database(binary(), #flux{}) -> ok | error_result().
-create_database(Name, Flux) when is_binary(Name) ->
-    Data = json:to_binary(#{ name => Name }),
-    case hackney:post(make_url(<<"/db">>, Flux), [], Data) of
-        {ok, 201, _Headers, _ClientRef} ->
-            ok;
-        {ok, 409, _Headers, _ClientRef} ->
-            {error, database_already_exists};
-        {ok, StatusCode, _Headers, ClientRef} ->
-            {ok, RespBody} = hackney:body(ClientRef),
-            {error, StatusCode, RespBody};
-        {error, econnrefused} ->
-            {error, influxdb_unavailable}
-    end.
+compose_tags(Tags) ->
+    compose_tags(Tags, <<>>).
 
--spec delete_database(binary(), #flux{}) -> ok | error_result().
-delete_database(Name, Flux) ->
-    case hackney:delete(make_url(<<"/db/", Name/binary>>, Flux)) of
-        {ok, 200, _Headers, _ClientRef} ->
-            ok;
-        {ok, StatusCode, _Headers, ClientRef} ->
-            {ok, RespBody} = hackney:body(ClientRef),
-            {error, StatusCode, RespBody};
-        {error, econnrefused} ->
-            {error, influxdb_unavailable}
-    end.
+compose_tags([], Acc) ->
+    Acc;
+compose_tags([{Key, Value} | Rest], <<>>) ->
+    NewAcc = <<(to_binary(Key))/binary, "=", (to_binary(Value))/binary>>,
+    compose_tags(Rest, NewAcc);
+compose_tags([{Key, Value} | Rest], Acc) ->
+    NewAcc = <<(to_binary(Key))/binary, "=", (to_binary(Value))/binary, ",", Acc/binary>>,
+    compose_tags(Rest, NewAcc).
 
--spec get_cluster_admins(#flux{}) -> ok_result() | error_result().
-get_cluster_admins(Flux) ->
-    case hackney:get(make_url(<<"/cluster_admins">>, Flux)) of
-        {ok, 200, _Headers, ClientRef} ->
-            {ok, RespBody} = hackney:body(ClientRef),
-            {ok, json:from_binary(RespBody)};
-        {ok, StatusCode, _Headers, ClientRef} ->
-            {ok, RespBody} = hackney:body(ClientRef),
-            {error, StatusCode, RespBody};
-        {error, econnrefused} ->
-            {error, influxdb_unavailable}
-    end.
-
--spec add_cluster_admin(map(), #flux{}) -> ok | error_result().
-add_cluster_admin(Admin, Flux) when is_map(Admin) ->
-    case hackney:post(make_url(<<"cluster_admins">>, Flux), [], json:to_binary(Admin)) of
-        {ok, 200, _Headers, _ClientRef} ->
-            ok;
-        {ok, StatusCode, _Headers, ClientRef} ->
-            {ok, RespBody} = hackney:body(ClientRef),
-            {error, StatusCode, RespBody};
-        {error, econnrefused} ->
-            {error, influxdb_unavailable}
-    end.
-
--spec update_cluster_admin_password(map(), #flux{}) -> ok | error_result().
-update_cluster_admin_password(#{ name := Name, password := Password }, Flux) ->
-    URL = [<<"/cluster_admins/", Name/binary>>],
-    case hackney:post(make_url(URL, Flux), [], json:to_binary(#{ password => Password })) of
-        {ok, 200, _Headers, _ClientRef} ->
-            ok;
-        {ok, StatusCode, _Headers, ClientRef} ->
-            {ok, RespBody} = hackney:body(ClientRef),
-            {error, StatusCode, RespBody};
-        {error, econnrefused} ->
-            {error, influxdb_unavailable}
-    end.
-
--spec delete_cluster_admin(binary(), #flux{}) -> ok | error_result().
-delete_cluster_admin(Name, Flux) when is_binary(Name) ->
-    URL = [<<"/cluster_admins/", Name/binary>>],
-    case hackney:delete(make_url(URL, Flux)) of
-        {ok, 200, _Headers, _ClientRef} ->
-            ok;
-        {ok, StatusCode, _Headers, ClientRef} ->
-            {ok, RespBody} = hackney:body(ClientRef),
-            {error, StatusCode, RespBody};
-        {error, econnrefused} ->
-            {error, influxdb_unavailable}
-    end.
-
--spec add_database_user(map(), #flux{}) -> ok | error_result().
-add_database_user(_User, Flux) when Flux#flux.db == undefined ->
-    {error, db_not_set};
-add_database_user(User, Flux) when is_map(User) ->
-    URL = <<"/db/", (Flux#flux.db)/binary, "/users">>,
-    case hackney:post(make_url(URL, Flux), [], json:to_binary(User)) of
-        {ok, 200, _Headers, _ClientRef} ->
-            ok;
-        {ok, StatusCode, _Headers, ClientRef} ->
-            {ok, RespBody} = hackney:body(ClientRef),
-            {error, StatusCode, RespBody};
-        {error, econnrefused} ->
-            {error, influxdb_unavailable}
-    end.
-
--spec delete_database_user(binary(), #flux{}) -> ok | error_result().
-delete_database_user(_Name, Flux) when Flux#flux.db == undefined ->
-    {error, db_not_set};
-delete_database_user(Name, Flux) when is_binary(Name) ->
-    URL = <<"/db/", (Flux#flux.db)/binary, "/users/", Name/binary>>,
-    case hackney:delete(make_url(URL, Flux)) of
-        {ok, 200, _Headers, _ClientRef} ->
-            ok;
-        {ok, StatusCode, _Headers, ClientRef} ->
-            {ok, RespBody} = hackney:body(ClientRef),
-            {error, StatusCode, RespBody};
-        {error, econnrefused} ->
-            {error, influxdb_unavailable}
-    end.
-
--spec update_user_password(binary(), #flux{}) -> ok | error_result().
-update_user_password(_Name, Flux) when Flux#flux.db == undefined ->
-    {error, db_not_set};
-update_user_password(#{ name := Name, password := Password }, Flux) ->
-    URL = <<"/db/", (Flux#flux.db)/binary, "/users/", Name/binary>>,
-    case hackney:post(make_url(URL, Flux), [], json:to_binary(#{ password => Password })) of
-        {ok, 200, _Headers, _ClientRef} ->
-            ok;
-        {ok, StatusCode, _Headers, ClientRef} ->
-            {ok, RespBody} = hackney:body(ClientRef),
-            {error, StatusCode, RespBody};
-        {error, econnrefused} ->
-            {error, influxdb_unavailable}
-    end.
-
--spec get_database_users(#flux{}) -> ok_result() | error_result().
-get_database_users(Flux) when Flux#flux.db == undefined ->
-    {error, db_not_set};
-get_database_users(Flux) ->
-    URL = <<"/db/", (Flux#flux.db)/binary, "/users">>,
-    case hackney:get(make_url(URL, Flux)) of
-        {ok, 200, _Headers, ClientRef} ->
-            {ok, RespBody} = hackney:body(ClientRef),
-            {ok, json:from_binary(RespBody)};
-        {ok, StatusCode, _Headers, ClientRef} ->
-            {ok, RespBody} = hackney:body(ClientRef),
-            {error, StatusCode, RespBody};
-        {error, econnrefused} ->
-            {error, influxdb_unavailable}
-    end.
-
--spec add_database_admin_priv(binary(), #flux{}) -> ok | error_result().
-add_database_admin_priv(_Name, Flux) when Flux#flux.db == undefined ->
-    {error, db_not_set};
-add_database_admin_priv(Name, Flux) ->
-    URL = <<"/db/", (Flux#flux.db)/binary, "/users/", Name/binary>>,
-    case hackney:post(make_url(URL, Flux), [], json:to_binary(#{ admin => true })) of
-        {ok, 200, _Headers, _ClientRef} ->
-            ok;
-        {ok, StatusCode, _Headers, ClientRef} ->
-            {ok, RespBody} = hackney:body(ClientRef),
-            {error, StatusCode, RespBody};
-        {error, econnrefused} ->
-            {error, influxdb_unavailable}
-    end.
-
--spec delete_database_admin_priv(binary(), #flux{}) -> ok | error_result().
-delete_database_admin_priv(_Name, Flux) when Flux#flux.db == undefined ->
-    {error, db_not_set};
-delete_database_admin_priv(Name, Flux) ->
-    URL = <<"/db/", (Flux#flux.db)/binary, "/users/", Name/binary>>,
-    case hackney:post(make_url(URL, Flux), [], json:to_binary(#{ admin => false })) of
-        {ok, 200, _Headers, _ClientRef} ->
-            ok;
-        {ok, StatusCode, _Headers, ClientRef} ->
-            {ok, RespBody} = hackney:body(ClientRef),
-            {error, StatusCode, RespBody};
-        {error, econnrefused} ->
-            {error, influxdb_unavailable}
-    end.
-
--spec update_database_user(map(), #flux{}) -> ok | error_result().
-update_database_user(_User, Flux) when Flux#flux.db == undefined ->
-    {error, db_not_set};
-update_database_user(#{ name := Name } = User, Flux) ->
-    URL = <<"/db/", (Flux#flux.db)/binary, "/users/", Name/binary>>,
-    case hackney:post(make_url(URL, Flux), [], json:to_binary(maps:without([name], User))) of
-        {ok, 200, _Headers, _ClientRef} ->
-            ok;
-        {ok, StatusCode, _Headers, ClientRef} ->
-            {ok, RespBody} = hackney:body(ClientRef),
-            {error, StatusCode, RespBody};
-        {error, econnrefused} ->
-            {error, influxdb_unavailable}
-    end.
-
--spec remove_server_from_cluster(binary(), #flux{}) -> ok | error_result().
-remove_server_from_cluster(Server, Flux) ->
-    URL = <<"/cluster/servers/", Server/binary>>,
-    case hackney:delete(make_url(URL, Flux)) of
-        {ok, 200, _Headers, _ClientRef} ->
-            ok;
-        {ok, StatusCode, _Headers, ClientRef} ->
-            {ok, RespBody} = hackney:body(ClientRef),
-            {error, StatusCode, RespBody};
-        {error, econnrefused} ->
-            {error, influxdb_unavailable}
-    end.
-
-%%%===================================================================
-%%% Internal functions
-%%%===================================================================
-
--spec make_series_url(#flux{}) -> binary().
-make_series_url(Flux) ->
-    make_series_url(Flux, []).
-
--spec make_series_url(#flux{}, list()) -> binary().
-make_series_url(Flux, Qs) ->
-    Path = iolist_to_binary([<<"/db/">>, Flux#flux.db, <<"/series">>]),
-    make_url(Path, Flux, Qs).
-
--spec make_url(binary() | list(), #flux{}) -> binary().
-make_url(Path, Flux) when is_list(Path) ->
-    make_url(iolist_to_binary(Path), Flux);
-make_url(Path, Flux) ->
-    make_url(Path, Flux, []).
-
--spec make_url(binary() | list(), #flux{}, list()) -> binary().
-make_url(Path, Flux, Qs) when is_list(Path) ->
-    make_url(iolist_to_binary(Path), Flux, Qs);
-make_url(Path, Flux, Qs) ->
-    Qs2 = [{<<"u">>, Flux#flux.user}, {<<"p">>, Flux#flux.password} | Qs],
-    Protocol = case Flux#flux.ssl of
-                   false -> <<"http://">>;
-                   true -> <<"https://">>
-               end,
-    URI = iolist_to_binary([Protocol, Flux#flux.host, ":", integer_to_list(Flux#flux.port)]),
-    hackney_url:make_url(URI, <<$/, Path/binary>>, Qs2).
+to_binary(Val) when is_integer(Val) ->
+    integer_to_binary(Val);
+to_binary(Val) when is_list(Val) ->
+    list_to_binary(Val);
+to_binary(Val) when is_atom(Val) ->
+    atom_to_binary(Val, utf8);
+to_binary(Val) when is_float(Val) ->
+    list_to_binary(float_to_list(Val)).
