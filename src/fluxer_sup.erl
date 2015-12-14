@@ -29,9 +29,7 @@ start_link() ->
 
 init([]) ->
     PoolName = fluxer:pool_name(),
-    PoolArgs = [{name, {local, PoolName}},
-                {worker_module, fluxer},
-                {size, ?FLUXER_POOL_SIZE}, {max_overflow, ?FLUXER_POOL_MAX_OVERFLOW}],
+    PoolArgs = pool_args(PoolName),
     FluxerArgs = fluxer_args(),
     PoolSpec = poolboy:child_spec(PoolName, PoolArgs, FluxerArgs),
     {ok, { {one_for_one, 5, 10}, [PoolSpec]} }.
@@ -39,6 +37,13 @@ init([]) ->
 %%====================================================================
 %% Internal functions
 %%====================================================================
+
+pool_args(PoolName) ->
+    PoolSize = application:get_env(fluxer, pool_size, ?FLUXER_POOL_SIZE),
+    PoolMaxOverflow = application:get_env(fluxer, pool_max_overflow, ?FLUXER_POOL_MAX_OVERFLOW),
+    [{name, {local, PoolName}},
+     {worker_module, fluxer},
+     {size, PoolSize}, {max_overflow, PoolMaxOverflow}].
 
 fluxer_args() ->
     Schema = application:get_env(fluxer, schema, ?DEFAULT_SCHEMA),
