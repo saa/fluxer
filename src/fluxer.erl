@@ -12,6 +12,7 @@
 -export([select/2]).
 
 -define(POOL_NAME, fluxer_pool).
+-define(CT, {"Content-Type", "text/plain"}).
 
 %%====================================================================
 %% API
@@ -63,7 +64,7 @@ write(DB, Data) when is_list(Data) ->
 write(DB, Data) ->
     Path = iolist_to_binary(["/write?db=", DB]),
     Fun = fun(W) ->
-                  fusco:request(W, Path, "POST", [], Data, 5000)
+                  fusco:request(W, Path, "POST", [?CT], Data, 5000)
           end,
     case poolboy:transaction(?POOL_NAME, Fun) of
         {ok, {{<<"204">>, _}, _Hdrs, _Resp, _, _}} -> ok;
