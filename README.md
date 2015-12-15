@@ -16,3 +16,4 @@ TODO
 * Authentication
 * UDP writer
 * Clustering API
+* Batch writes
