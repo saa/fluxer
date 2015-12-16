@@ -8,6 +8,7 @@
 -export([show_databases/0]).
 
 -export([write/2, write/3, write/4]).
+-export([write_batch/3]).
 
 -export([select/2, select/3]).
 
@@ -57,16 +58,17 @@ select(DB, Measurement, Cols) ->
     Query = <<"SELECT ", ComposedCols/binary, " FROM ", (to_binary(Measurement))/binary>>,
     select_2(DB, Query).
 
+write_batch(DB, Measurements, Values) ->
+    Line = compose_batch(Measurements, Values),
+    write(DB, Line).
+
 write(DB, Measurement, Value) ->
     write(DB, Measurement, [], Value).
 
 write(DB, Measurement, [], Value) ->
-    Line = iolist_to_binary([to_binary(Measurement), <<" value=">>, maybe_integer(Value)]),
-    write(DB, Line);
+    write(DB, line(Measurement, Value));
 write(DB, Measurement, Tags, Value) ->
-    ComposedTags = compose_tags(Tags),
-    Line = iolist_to_binary([to_binary(Measurement), <<",">>, ComposedTags, <<" value=">>, maybe_integer(Value)]),
-    write(DB, Line).
+    write(DB, line(Measurement, Tags, Value)).
 
 write(DB, Data) when is_list(Data) ->
     write(DB, list_to_binary(Data));
@@ -83,6 +85,25 @@ write(DB, Data) when is_binary(Data) ->
 %%====================================================================
 %% Internal functions
 %%====================================================================
+
+compose_batch(Measurements, Values) ->
+    Zip = lists:zip(Measurements, Values),
+    compose_batch_2(Zip, <<>>).
+
+compose_batch_2([], Acc) ->
+    Acc;
+compose_batch_2([{Measurement, Value}], Acc) ->
+    <<Acc/binary, (line(Measurement, Value))/binary>>;
+compose_batch_2([{Measurement, Value} | Rest], Acc) ->
+    NewAcc = <<Acc/binary, (line(Measurement, Value))/binary, "\n">>,
+    compose_batch_2(Rest, NewAcc).
+
+line(Measurement, Value) ->
+    iolist_to_binary([to_binary(Measurement), <<" value=">>, maybe_integer(Value)]).
+
+line(Measurement, Tags, Value) ->
+    iolist_to_binary([to_binary(Measurement), <<",">>, compose_tags(Tags),
+                      <<" value=">>, maybe_integer(Value)]).
 
 -spec select_2(string() | binary() | atom(), string() | binary()) -> term().
 select_2(DB, Query) ->
