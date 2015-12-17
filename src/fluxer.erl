@@ -2,15 +2,13 @@
 
 -export([start_link/1]).
 -export([pool_name/0]).
-
 -export([create_database/1]).
 -export([create_database/2]).
 -export([show_databases/0]).
-
 -export([write/2, write/3, write/4]).
 -export([write_batch/3]).
-
 -export([select/2, select/3]).
+-export([query/2]).
 
 -define(POOL_NAME, fluxer_pool).
 -define(CT, {<<"Content-Type">>, <<"text/plain">>}).
@@ -75,16 +73,29 @@ write(DB, Data) when is_list(Data) ->
 write(DB, Data) when is_binary(Data) ->
     Path = iolist_to_binary([<<"/write?db=">>, to_binary(DB)]),
     Fun = fun(W) ->
-                  fusco:request(W, Path, <<"POST">>, [?CT], Data, 5000)
+                  fusco:request(W, Path, <<"POST">>, maybe_add_auth([?CT]), Data, 5000)
           end,
     case poolboy:transaction(?POOL_NAME, Fun) of
         {ok, {{<<"204">>, _}, _Hdrs, _Resp, _, _}} -> ok;
         Error -> Error
     end.
 
+query(DB, Query) ->
+    query_2(iolist_to_binary([<<"/query?db=">>, to_binary(DB), <<"&q=">>, to_binary(Query)])).
+
 %%====================================================================
 %% Internal functions
 %%====================================================================
+
+maybe_add_auth(Headers) ->
+    case application:get_env(?MODULE, username) of
+        {ok, Username} ->
+            {ok, Password} = application:get_env(?MODULE, password),
+            Base64 = base64:encode(<<(to_binary(Username))/binary, ":", (to_binary(Password))/binary>>),
+            [{<<"Authorization">>, <<"Basic ", Base64/binary>>} | Headers];
+        _Skip ->
+            Headers
+    end.
 
 compose_batch(Measurements, Values) ->
     Zip = lists:zip(Measurements, Values),
@@ -115,13 +126,10 @@ query(Query) when is_list(Query) ->
 query(Query) when is_binary(Query) ->
     query_2(iolist_to_binary([<<"/query?q=">>, Query])).
 
-query(DB, Query) when is_binary(Query), is_binary(DB) ->
-    query_2(iolist_to_binary([<<"/query?db=">>, to_binary(DB), <<"&q=">>, Query])).
-
 query_2(Query) when is_binary(Query) ->
     Query2 = binary:replace(Query, <<" ">>, <<"%20">>, [global]),
     Fun = fun(W) ->
-                  fusco:request(W, Query2, <<"GET">>, [], [], 5000)
+                  fusco:request(W, Query2, <<"GET">>, maybe_add_auth([]), [], 5000)
           end,
     case poolboy:transaction(?POOL_NAME, Fun) of
         {ok, {{<<"200">>, _}, _Hdrs, Resp, _, _}} ->

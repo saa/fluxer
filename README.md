@@ -13,6 +13,5 @@ TODO
 ## TODO
 
 * Better response parsing
-* Authentication
 * UDP writer
 * Clustering API
